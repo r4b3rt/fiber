@@ -1,5 +1,4 @@
 //go:build darwin
-// +build darwin
 
 package net
 
@@ -7,11 +6,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/gofiber/fiber/v2/internal/gopsutil/common"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/gofiber/fiber/v2/internal/gopsutil/common"
 )
 
 var (
@@ -250,7 +250,7 @@ func IOCountersWithContext(ctx context.Context, pernic bool) ([]IOCountersStat, 
 		}
 	}
 
-	if pernic == false {
+	if !pernic {
 		return getIOCountersAll(ret)
 	}
 	return ret, nil

@@ -22,7 +22,6 @@ type IOCountersStat struct {
 	Dropout     uint64 `json:"dropout"`     // total number of outgoing packets which were dropped (always 0 on OSX and BSD)
 	Fifoin      uint64 `json:"fifoin"`      // total number of FIFO buffers errors while receiving
 	Fifoout     uint64 `json:"fifoout"`     // total number of FIFO buffers errors while sending
-
 }
 
 // Addr is implemented compatibility to psutil
@@ -88,7 +87,7 @@ type ConntrackStat struct {
 	SearchRestart uint32 `json:"search_restart"` // Conntrack table lookups restarted due to hashtable resizes
 }
 
-func NewConntrackStat(e uint32, s uint32, f uint32, n uint32, inv uint32, ign uint32, del uint32, dlst uint32, ins uint32, insfail uint32, drop uint32, edrop uint32, ie uint32, en uint32, ec uint32, ed uint32, sr uint32) *ConntrackStat {
+func NewConntrackStat(e, s, f, n, inv, ign, del, dlst, ins, insfail, drop, edrop, ie, en, ec, ed, sr uint32) *ConntrackStat {
 	return &ConntrackStat{
 		Entries:       e,
 		Searched:      s,
@@ -125,7 +124,7 @@ func (l *ConntrackStatList) Append(c *ConntrackStat) {
 }
 
 func (l *ConntrackStatList) Items() []ConntrackStat {
-	items := make([]ConntrackStat, len(l.items), len(l.items))
+	items := make([]ConntrackStat, len(l.items))
 	for i, el := range l.items {
 		items[i] = *el
 	}

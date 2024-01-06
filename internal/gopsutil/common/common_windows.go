@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 package common
 
@@ -11,8 +10,9 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/gofiber/fiber/v2/internal/wmi"
 	"golang.org/x/sys/windows"
+
+	"github.com/gofiber/fiber/v2/internal/wmi"
 )
 
 // for double values
@@ -156,7 +156,7 @@ func NewWin32PerformanceCounter(postName, counterName string) (*Win32Performance
 	if err != nil {
 		return nil, err
 	}
-	var counter = Win32PerformanceCounter{
+	counter := Win32PerformanceCounter{
 		Query:       query,
 		PostName:    postName,
 		CounterName: counterName,
@@ -211,9 +211,12 @@ func WMIQueryWithContext(ctx context.Context, query string, dst interface{}, con
 }
 
 // Convert paths using native DOS format like:
-//   "\Device\HarddiskVolume1\Windows\systemew\file.txt"
+//
+//	"\Device\HarddiskVolume1\Windows\systemew\file.txt"
+//
 // into:
-//   "C:\Windows\systemew\file.txt"
+//
+//	"C:\Windows\systemew\file.txt"
 func ConvertDOSPath(p string) string {
 	rawDrive := strings.Join(strings.Split(p, `\`)[:3], `\`)
 

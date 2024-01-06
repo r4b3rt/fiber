@@ -1,12 +1,13 @@
 package csrf
 
 import (
-	"fmt"
 	"net/textproto"
 	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/log"
+	"github.com/gofiber/fiber/v2/middleware/session"
 	"github.com/gofiber/fiber/v2/utils"
 )
 
@@ -18,7 +19,7 @@ type Config struct {
 	Next func(c *fiber.Ctx) bool
 
 	// KeyLookup is a string in the form of "<source>:<key>" that is used
-	// to extract token from the request.
+	// to create an Extractor that extracts the token from the request.
 	// Possible values:
 	// - "header:<name>"
 	// - "query:<name>"
@@ -26,11 +27,14 @@ type Config struct {
 	// - "form:<name>"
 	// - "cookie:<name>"
 	//
-	// Optional. Default: "header:X-CSRF-Token"
+	// Ignored if an Extractor is explicitly set.
+	//
+	// Optional. Default: "header:X-Csrf-Token"
 	KeyLookup string
 
 	// Name of the session cookie. This cookie will store session key.
 	// Optional. Default value "csrf_".
+	// Overridden if KeyLookup == "cookie:<name>"
 	CookieName string
 
 	// Domain of the CSRF cookie.
@@ -62,29 +66,47 @@ type Config struct {
 	// Optional. Default: 1 * time.Hour
 	Expiration time.Duration
 
+	// SingleUseToken indicates if the CSRF token be destroyed
+	// and a new one generated on each use.
+	//
+	// Optional. Default: false
+	SingleUseToken bool
+
 	// Store is used to store the state of the middleware
 	//
 	// Optional. Default: memory.New()
+	// Ignored if Session is set.
 	Storage fiber.Storage
+
+	// Session is used to store the state of the middleware
+	//
+	// Optional. Default: nil
+	// If set, the middleware will use the session store instead of the storage
+	Session *session.Store
+
+	// SessionKey is the key used to store the token in the session
+	//
+	// Default: "fiber.csrf.token"
+	SessionKey string
 
 	// Context key to store generated CSRF token into context.
 	// If left empty, token will not be stored in context.
 	//
 	// Optional. Default: ""
-	ContextKey string
+	ContextKey interface{}
 
 	// KeyGenerator creates a new CSRF token
 	//
 	// Optional. Default: utils.UUID
 	KeyGenerator func() string
 
-	// Deprecated, please use Expiration
+	// Deprecated: Please use Expiration
 	CookieExpires time.Duration
 
-	// Deprecated, please use Cookie* related fields
+	// Deprecated: Please use Cookie* related fields
 	Cookie *fiber.Cookie
 
-	// Deprecated, please use KeyLookup
+	// Deprecated: Please use KeyLookup
 	TokenLookup string
 
 	// ErrorHandler is executed when an error is returned from fiber.Handler.
@@ -92,23 +114,36 @@ type Config struct {
 	// Optional. Default: DefaultErrorHandler
 	ErrorHandler fiber.ErrorHandler
 
-	// extractor returns the csrf token from the request based on KeyLookup
-	extractor func(c *fiber.Ctx) (string, error)
+	// Extractor returns the csrf token
+	//
+	// If set this will be used in place of an Extractor based on KeyLookup.
+	//
+	// Optional. Default will create an Extractor based on KeyLookup.
+	Extractor func(c *fiber.Ctx) (string, error)
+
+	// HandlerContextKey is used to store the CSRF Handler into context
+	//
+	// Default: "fiber.csrf.handler"
+	HandlerContextKey interface{}
 }
+
+const HeaderName = "X-Csrf-Token"
 
 // ConfigDefault is the default config
 var ConfigDefault = Config{
-	KeyLookup:      "header:X-Csrf-Token",
-	CookieName:     "csrf_",
-	CookieSameSite: "Lax",
-	Expiration:     1 * time.Hour,
-	KeyGenerator:   utils.UUID,
-	ErrorHandler:   defaultErrorHandler,
-	extractor:      csrfFromHeader("X-Csrf-Token"),
+	KeyLookup:         "header:" + HeaderName,
+	CookieName:        "csrf_",
+	CookieSameSite:    "Lax",
+	Expiration:        1 * time.Hour,
+	KeyGenerator:      utils.UUIDv4,
+	ErrorHandler:      defaultErrorHandler,
+	Extractor:         CsrfFromHeader(HeaderName),
+	SessionKey:        "fiber.csrf.token",
+	HandlerContextKey: "fiber.csrf.handler",
 }
 
 // default ErrorHandler that process return error from fiber.Handler
-var defaultErrorHandler = func(c *fiber.Ctx, err error) error {
+func defaultErrorHandler(_ *fiber.Ctx, _ error) error {
 	return fiber.ErrForbidden
 }
 
@@ -124,15 +159,15 @@ func configDefault(config ...Config) Config {
 
 	// Set default values
 	if cfg.TokenLookup != "" {
-		fmt.Println("[CSRF] TokenLookup is deprecated, please use KeyLookup")
+		log.Warn("[CSRF] TokenLookup is deprecated, please use KeyLookup")
 		cfg.KeyLookup = cfg.TokenLookup
 	}
 	if int(cfg.CookieExpires.Seconds()) > 0 {
-		fmt.Println("[CSRF] CookieExpires is deprecated, please use Expiration")
+		log.Warn("[CSRF] CookieExpires is deprecated, please use Expiration")
 		cfg.Expiration = cfg.CookieExpires
 	}
 	if cfg.Cookie != nil {
-		fmt.Println("[CSRF] Cookie is deprecated, please use Cookie* related fields")
+		log.Warn("[CSRF] Cookie is deprecated, please use Cookie* related fields")
 		if cfg.Cookie.Name != "" {
 			cfg.CookieName = cfg.Cookie.Name
 		}
@@ -166,26 +201,42 @@ func configDefault(config ...Config) Config {
 	if cfg.ErrorHandler == nil {
 		cfg.ErrorHandler = ConfigDefault.ErrorHandler
 	}
+	if cfg.SessionKey == "" {
+		cfg.SessionKey = ConfigDefault.SessionKey
+	}
+	if cfg.HandlerContextKey == nil {
+		cfg.HandlerContextKey = ConfigDefault.HandlerContextKey
+	}
 
 	// Generate the correct extractor to get the token from the correct location
 	selectors := strings.Split(cfg.KeyLookup, ":")
 
-	if len(selectors) != 2 {
+	const numParts = 2
+	if len(selectors) != numParts {
 		panic("[CSRF] KeyLookup must in the form of <source>:<key>")
 	}
 
-	// By default we extract from a header
-	cfg.extractor = csrfFromHeader(textproto.CanonicalMIMEHeaderKey(selectors[1]))
+	if cfg.Extractor == nil {
+		// By default we extract from a header
+		cfg.Extractor = CsrfFromHeader(textproto.CanonicalMIMEHeaderKey(selectors[1]))
 
-	switch selectors[0] {
-	case "form":
-		cfg.extractor = csrfFromForm(selectors[1])
-	case "query":
-		cfg.extractor = csrfFromQuery(selectors[1])
-	case "param":
-		cfg.extractor = csrfFromParam(selectors[1])
-	case "cookie":
-		cfg.extractor = csrfFromCookie(selectors[1])
+		switch selectors[0] {
+		case "form":
+			cfg.Extractor = CsrfFromForm(selectors[1])
+		case "query":
+			cfg.Extractor = CsrfFromQuery(selectors[1])
+		case "param":
+			cfg.Extractor = CsrfFromParam(selectors[1])
+		case "cookie":
+			if cfg.Session == nil {
+				log.Warn("[CSRF] Cookie extractor is not recommended without a session store")
+			}
+			if cfg.CookieSameSite == "None" || cfg.CookieSameSite != "Lax" && cfg.CookieSameSite != "Strict" {
+				log.Warn("[CSRF] Cookie extractor is only recommended for use with SameSite=Lax or SameSite=Strict")
+			}
+			cfg.Extractor = CsrfFromCookie(selectors[1])
+			cfg.CookieName = selectors[1] // Cookie name is the same as the key
+		}
 	}
 
 	return cfg

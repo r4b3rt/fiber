@@ -64,8 +64,8 @@ type SignalInfoStat struct {
 
 type RlimitStat struct {
 	Resource int32  `json:"resource"`
-	Soft     int32  `json:"soft"` //TODO too small. needs to be uint64
-	Hard     int32  `json:"hard"` //TODO too small. needs to be uint64
+	Soft     int32  `json:"soft"` // TODO too small. needs to be uint64
+	Hard     int32  `json:"hard"` // TODO too small. needs to be uint64
 	Used     uint64 `json:"used"`
 }
 
@@ -164,8 +164,8 @@ func NewProcess(pid int32) (*Process, error) {
 	if !exists {
 		return p, ErrorProcessNotRunning
 	}
-	p.CreateTime()
-	return p, nil
+	_, err = p.CreateTime()
+	return p, err
 }
 
 func PidExists(pid int32) (bool, error) {

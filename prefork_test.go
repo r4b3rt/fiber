@@ -6,7 +6,7 @@ package fiber
 
 import (
 	"crypto/tls"
-	"io/ioutil"
+	"io"
 	"os"
 	"testing"
 	"time"
@@ -38,6 +38,7 @@ func Test_App_Prefork_Child_Process(t *testing.T) {
 	if err != nil {
 		utils.AssertEqual(t, nil, err)
 	}
+	//nolint:gosec // We're in a test so using old ciphers is fine
 	config := &tls.Config{Certificates: []tls.Certificate{cer}}
 
 	go func() {
@@ -61,10 +62,12 @@ func Test_App_Prefork_Master_Process(t *testing.T) {
 
 	utils.AssertEqual(t, nil, app.prefork(NetworkTCP4, ":3000", nil))
 
-	dummyChildCmd = "invalid"
+	dummyChildCmd.Store("invalid")
 
 	err := app.prefork(NetworkTCP4, "127.0.0.1:", nil)
 	utils.AssertEqual(t, false, err == nil)
+
+	dummyChildCmd.Store("")
 }
 
 func Test_App_Prefork_Child_Process_Never_Show_Startup_Message(t *testing.T) {
@@ -83,7 +86,7 @@ func Test_App_Prefork_Child_Process_Never_Show_Startup_Message(t *testing.T) {
 
 	utils.AssertEqual(t, nil, w.Close())
 
-	out, err := ioutil.ReadAll(r)
+	out, err := io.ReadAll(r)
 	utils.AssertEqual(t, nil, err)
 	utils.AssertEqual(t, 0, len(out))
 }

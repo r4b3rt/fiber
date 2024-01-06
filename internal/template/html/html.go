@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/gofiber/fiber/v2/internal/template/utils"
+	"github.com/gofiber/fiber/v2/log"
 )
 
 // Engine struct
@@ -56,7 +57,7 @@ func New(directory, extension string) *Engine {
 	return engine
 }
 
-//NewFileSystem ...
+// NewFileSystem ...
 func NewFileSystem(fs http.FileSystem, extension string) *Engine {
 	engine := &Engine{
 		left:       "{{",
@@ -112,7 +113,7 @@ func (e *Engine) Debug(enabled bool) *Engine {
 
 // Parse is deprecated, please use Load() instead
 func (e *Engine) Parse() error {
-	fmt.Println("Parse() is deprecated, please use Load() instead.")
+	log.Warn("Parse() is deprecated, please use Load() instead.")
 	return e.Load()
 }
 
@@ -169,7 +170,7 @@ func (e *Engine) Load() error {
 		}
 		// Debugging
 		if e.debug {
-			fmt.Printf("views: parsed template: %s\n", name)
+			log.Infof("views: parsed template: %s", name)
 		}
 		return err
 	}
@@ -183,15 +184,6 @@ func (e *Engine) Load() error {
 
 // Render will execute the template name along with the given values.
 func (e *Engine) Render(out io.Writer, template string, binding interface{}, layout ...string) error {
-	if !e.loaded || e.reload {
-		if e.reload {
-			e.loaded = false
-		}
-		if err := e.Load(); err != nil {
-			return err
-		}
-	}
-
 	tmpl := e.Templates.Lookup(template)
 	if tmpl == nil {
 		return fmt.Errorf("render: template %s does not exist", template)

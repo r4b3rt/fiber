@@ -3,18 +3,21 @@ package proxy
 import (
 	"bytes"
 	"crypto/tls"
-	"fmt"
 	"net/url"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/log"
 	"github.com/gofiber/fiber/v2/utils"
+
 	"github.com/valyala/fasthttp"
 )
 
 // New is deprecated
 func New(config Config) fiber.Handler {
-	fmt.Println("proxy.New is deprecated, please use proxy.Balancer instead")
+	log.Warn("[PROXY] proxy.New is deprecated, please use proxy.Balancer instead")
 	return Balancer(config)
 }
 
@@ -24,38 +27,43 @@ func Balancer(config Config) fiber.Handler {
 	cfg := configDefault(config)
 
 	// Load balanced client
-	var lbc fasthttp.LBClient
-	// Set timeout
-	lbc.Timeout = cfg.Timeout
+	lbc := &fasthttp.LBClient{}
+	// Note that Servers, Timeout, WriteBufferSize, ReadBufferSize and TlsConfig
+	// will not be used if the client are set.
+	if config.Client == nil {
+		// Set timeout
+		lbc.Timeout = cfg.Timeout
+		// Scheme must be provided, falls back to http
+		for _, server := range cfg.Servers {
+			if !strings.HasPrefix(server, "http") {
+				server = "http://" + server
+			}
 
-	// Scheme must be provided, falls back to http
-	// TODO add https support
-	for _, server := range cfg.Servers {
-		if !strings.HasPrefix(server, "http") {
-			server = "http://" + server
+			u, err := url.Parse(server)
+			if err != nil {
+				panic(err)
+			}
+
+			client := &fasthttp.HostClient{
+				NoDefaultUserAgentHeader: true,
+				DisablePathNormalizing:   true,
+				Addr:                     u.Host,
+
+				ReadBufferSize:  config.ReadBufferSize,
+				WriteBufferSize: config.WriteBufferSize,
+
+				TLSConfig: config.TlsConfig,
+			}
+
+			lbc.Clients = append(lbc.Clients, client)
 		}
-
-		u, err := url.Parse(server)
-		if err != nil {
-			panic(err)
-		}
-
-		client := &fasthttp.HostClient{
-			NoDefaultUserAgentHeader: true,
-			DisablePathNormalizing:   true,
-			Addr:                     u.Host,
-
-			ReadBufferSize:  config.ReadBufferSize,
-			WriteBufferSize: config.WriteBufferSize,
-
-			TLSConfig: config.TlsConfig,
-		}
-
-		lbc.Clients = append(lbc.Clients, client)
+	} else {
+		// Set custom client
+		lbc = config.Client
 	}
 
 	// Return new handler
-	return func(c *fiber.Ctx) (err error) {
+	return func(c *fiber.Ctx) error {
 		// Don't execute middleware if Next returns true
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
@@ -70,7 +78,7 @@ func Balancer(config Config) fiber.Handler {
 
 		// Modify request
 		if cfg.ModifyRequest != nil {
-			if err = cfg.ModifyRequest(c); err != nil {
+			if err := cfg.ModifyRequest(c); err != nil {
 				return err
 			}
 		}
@@ -78,7 +86,7 @@ func Balancer(config Config) fiber.Handler {
 		req.SetRequestURI(utils.UnsafeString(req.RequestURI()))
 
 		// Forward request
-		if err = lbc.Do(req, res); err != nil {
+		if err := lbc.Do(req, res); err != nil {
 			return err
 		}
 
@@ -87,7 +95,7 @@ func Balancer(config Config) fiber.Handler {
 
 		// Modify response
 		if cfg.ModifyResponse != nil {
-			if err = cfg.ModifyResponse(c); err != nil {
+			if err := cfg.ModifyResponse(c); err != nil {
 				return err
 			}
 		}
@@ -97,42 +105,103 @@ func Balancer(config Config) fiber.Handler {
 	}
 }
 
-var client = fasthttp.Client{
+var client = &fasthttp.Client{
 	NoDefaultUserAgentHeader: true,
 	DisablePathNormalizing:   true,
 }
 
+var lock sync.RWMutex
+
 // WithTlsConfig update http client with a user specified tls.config
 // This function should be called before Do and Forward.
+// Deprecated: use WithClient instead.
+//
+//nolint:stylecheck,revive // TODO: Rename to "WithTLSConfig" in v3
 func WithTlsConfig(tlsConfig *tls.Config) {
 	client.TLSConfig = tlsConfig
 }
 
+// WithClient sets the global proxy client.
+// This function should be called before Do and Forward.
+func WithClient(cli *fasthttp.Client) {
+	lock.Lock()
+	defer lock.Unlock()
+	client = cli
+}
+
 // Forward performs the given http request and fills the given http response.
 // This method will return an fiber.Handler
-func Forward(addr string) fiber.Handler {
+func Forward(addr string, clients ...*fasthttp.Client) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		return Do(c, addr)
+		return Do(c, addr, clients...)
 	}
 }
 
 // Do performs the given http request and fills the given http response.
 // This method can be used within a fiber.Handler
-func Do(c *fiber.Ctx, addr string) error {
+func Do(c *fiber.Ctx, addr string, clients ...*fasthttp.Client) error {
+	return doAction(c, addr, func(cli *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) error {
+		return cli.Do(req, resp)
+	}, clients...)
+}
+
+// DoRedirects performs the given http request and fills the given http response, following up to maxRedirectsCount redirects.
+// When the redirect count exceeds maxRedirectsCount, ErrTooManyRedirects is returned.
+// This method can be used within a fiber.Handler
+func DoRedirects(c *fiber.Ctx, addr string, maxRedirectsCount int, clients ...*fasthttp.Client) error {
+	return doAction(c, addr, func(cli *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) error {
+		return cli.DoRedirects(req, resp, maxRedirectsCount)
+	}, clients...)
+}
+
+// DoDeadline performs the given request and waits for response until the given deadline.
+// This method can be used within a fiber.Handler
+func DoDeadline(c *fiber.Ctx, addr string, deadline time.Time, clients ...*fasthttp.Client) error {
+	return doAction(c, addr, func(cli *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) error {
+		return cli.DoDeadline(req, resp, deadline)
+	}, clients...)
+}
+
+// DoTimeout performs the given request and waits for response during the given timeout duration.
+// This method can be used within a fiber.Handler
+func DoTimeout(c *fiber.Ctx, addr string, timeout time.Duration, clients ...*fasthttp.Client) error {
+	return doAction(c, addr, func(cli *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) error {
+		return cli.DoTimeout(req, resp, timeout)
+	}, clients...)
+}
+
+func doAction(
+	c *fiber.Ctx,
+	addr string,
+	action func(cli *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) error,
+	clients ...*fasthttp.Client,
+) error {
+	var cli *fasthttp.Client
+
+	// set local or global client
+	if len(clients) != 0 {
+		cli = clients[0]
+	} else {
+		lock.RLock()
+		cli = client
+		lock.RUnlock()
+	}
+
 	req := c.Request()
 	res := c.Response()
 	originalURL := utils.CopyString(c.OriginalURL())
 	defer req.SetRequestURI(originalURL)
-	req.SetRequestURI(addr)
+
+	copiedURL := utils.CopyString(addr)
+	req.SetRequestURI(copiedURL)
 	// NOTE: if req.isTLS is true, SetRequestURI keeps the scheme as https.
-	// issue reference:
-	// https://github.com/gofiber/fiber/issues/1762
-	if scheme := getScheme(utils.UnsafeBytes(addr)); len(scheme) > 0 {
+	// Reference: https://github.com/gofiber/fiber/issues/1762
+	if scheme := getScheme(utils.UnsafeBytes(copiedURL)); len(scheme) > 0 {
 		req.URI().SetSchemeBytes(scheme)
 	}
 
 	req.Header.Del(fiber.HeaderConnection)
-	if err := client.Do(req, res); err != nil {
+	if err := action(cli, req, res); err != nil {
 		return err
 	}
 	res.Header.Del(fiber.HeaderConnection)
@@ -145,4 +214,54 @@ func getScheme(uri []byte) []byte {
 		return nil
 	}
 	return uri[:i-1]
+}
+
+// DomainForward performs an http request based on the given domain and populates the given http response.
+// This method will return an fiber.Handler
+func DomainForward(hostname, addr string, clients ...*fasthttp.Client) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		host := string(c.Request().Host())
+		if host == hostname {
+			return Do(c, addr+c.OriginalURL(), clients...)
+		}
+		return nil
+	}
+}
+
+type roundrobin struct {
+	sync.Mutex
+
+	current int
+	pool    []string
+}
+
+// this method will return a string of addr server from list server.
+func (r *roundrobin) get() string {
+	r.Lock()
+	defer r.Unlock()
+
+	if r.current >= len(r.pool) {
+		r.current %= len(r.pool)
+	}
+
+	result := r.pool[r.current]
+	r.current++
+	return result
+}
+
+// BalancerForward Forward performs the given http request with round robin algorithm to server and fills the given http response.
+// This method will return an fiber.Handler
+func BalancerForward(servers []string, clients ...*fasthttp.Client) fiber.Handler {
+	r := &roundrobin{
+		current: 0,
+		pool:    servers,
+	}
+	return func(c *fiber.Ctx) error {
+		server := r.get()
+		if !strings.HasPrefix(server, "http") {
+			server = "http://" + server
+		}
+		c.Request().Header.Add("X-Real-IP", c.IP())
+		return Do(c, server+c.OriginalURL(), clients...)
+	}
 }

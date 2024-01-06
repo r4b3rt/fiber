@@ -2,13 +2,19 @@ package session
 
 import (
 	"encoding/gob"
+	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/internal/storage/memory"
 	"github.com/gofiber/fiber/v2/utils"
+
 	"github.com/valyala/fasthttp"
 )
+
+// ErrEmptySessionID is an error that occurs when the session ID is empty.
+var ErrEmptySessionID = errors.New("session id cannot be empty")
 
 type Store struct {
 	Config
@@ -31,7 +37,7 @@ func New(config ...Config) *Store {
 
 // RegisterType will allow you to encode/decode custom types
 // into any Storage provider
-func (s *Store) RegisterType(i interface{}) {
+func (*Store) RegisterType(i interface{}) {
 	gob.Register(i)
 }
 
@@ -66,15 +72,15 @@ func (s *Store) Get(c *fiber.Ctx) (*Session, error) {
 	// Fetch existing data
 	if loadData {
 		raw, err := s.Storage.Get(id)
-		// Unmashal if we found data
+		// Unmarshal if we found data
 		if raw != nil && err == nil {
 			mux.Lock()
 			defer mux.Unlock()
-			_, _ = sess.byteBuffer.Write(raw)
+			_, _ = sess.byteBuffer.Write(raw) //nolint:errcheck // This will never fail
 			encCache := gob.NewDecoder(sess.byteBuffer)
 			err := encCache.Decode(&sess.data.Data)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("failed to decode session data: %w", err)
 			}
 		} else if err != nil {
 			return nil, err
@@ -137,4 +143,12 @@ func (s *Store) responseCookies(c *fiber.Ctx) (string, error) {
 // Reset will delete all session from the storage
 func (s *Store) Reset() error {
 	return s.Storage.Reset()
+}
+
+// Delete deletes a session by its id.
+func (s *Store) Delete(id string) error {
+	if id == "" {
+		return ErrEmptySessionID
+	}
+	return s.Storage.Delete(id)
 }

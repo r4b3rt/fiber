@@ -1,6 +1,8 @@
 package encryptcookie
 
-import "github.com/gofiber/fiber/v2"
+import (
+	"github.com/gofiber/fiber/v2"
+)
 
 // Config defines the config for middleware.
 type Config struct {
@@ -34,7 +36,7 @@ type Config struct {
 // ConfigDefault is the default config
 var ConfigDefault = Config{
 	Next:      nil,
-	Except:    []string{"csrf_"},
+	Except:    []string{},
 	Key:       "",
 	Encryptor: EncryptCookie,
 	Decryptor: DecryptCookie,

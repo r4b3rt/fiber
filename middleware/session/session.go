@@ -3,11 +3,13 @@ package session
 import (
 	"bytes"
 	"encoding/gob"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/utils"
+
 	"github.com/valyala/fasthttp"
 )
 
@@ -28,7 +30,7 @@ var sessionPool = sync.Pool{
 }
 
 func acquireSession() *Session {
-	s := sessionPool.Get().(*Session)
+	s := sessionPool.Get().(*Session) //nolint:forcetypeassert,errcheck // We store nothing else in the pool
 	if s.data == nil {
 		s.data = acquireData()
 	}
@@ -123,6 +125,33 @@ func (s *Session) Regenerate() error {
 	return nil
 }
 
+// Reset generates a new session id, deletes the old one from storage, and resets the associated data
+func (s *Session) Reset() error {
+	// Reset local data
+	if s.data != nil {
+		s.data.Reset()
+	}
+	// Reset byte buffer
+	if s.byteBuffer != nil {
+		s.byteBuffer.Reset()
+	}
+	// Reset expiration
+	s.exp = 0
+
+	// Delete old id from storage
+	if err := s.config.Storage.Delete(s.id); err != nil {
+		return err
+	}
+
+	// Expire session
+	s.delSession()
+
+	// Generate a new session, and set session.fresh to true
+	s.refresh()
+
+	return nil
+}
+
 // refresh generates a new session, and set session.fresh to be true
 func (s *Session) refresh() {
 	// Create a new id
@@ -144,10 +173,8 @@ func (s *Session) Save() error {
 		s.exp = s.config.Expiration
 	}
 
-	// Create session with the session ID if fresh
-	if s.fresh {
-		s.setSession()
-	}
+	// Update client cookie
+	s.setSession()
 
 	// Convert data to bytes
 	mux.Lock()
@@ -155,7 +182,7 @@ func (s *Session) Save() error {
 	encCache := gob.NewEncoder(s.byteBuffer)
 	err := encCache.Encode(&s.data.Data)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to encode data: %w", err)
 	}
 
 	// copy the data in buffer
@@ -197,8 +224,12 @@ func (s *Session) setSession() {
 		fcookie.SetValue(s.id)
 		fcookie.SetPath(s.config.CookiePath)
 		fcookie.SetDomain(s.config.CookieDomain)
-		fcookie.SetMaxAge(int(s.exp.Seconds()))
-		fcookie.SetExpire(time.Now().Add(s.exp))
+		// Cookies are also session cookies if they do not specify the Expires or Max-Age attribute.
+		// refer: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Set-Cookie
+		if !s.config.CookieSessionOnly {
+			fcookie.SetMaxAge(int(s.exp.Seconds()))
+			fcookie.SetExpire(time.Now().Add(s.exp))
+		}
 		fcookie.SetSecure(s.config.CookieSecure)
 		fcookie.SetHTTPOnly(s.config.CookieHTTPOnly)
 

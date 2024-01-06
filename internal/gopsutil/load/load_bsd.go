@@ -1,5 +1,4 @@
 //go:build freebsd || openbsd
-// +build freebsd openbsd
 
 package load
 
@@ -10,7 +9,11 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/gofiber/fiber/v2/internal/gopsutil/common"
 )
+
+var invoke common.Invoker = common.Invoke{}
 
 func Avg() (*AvgStat, error) {
 	return AvgWithContext(context.Background())
@@ -75,7 +78,7 @@ func MiscWithContext(ctx context.Context) (*MiscStat, error) {
 	if err != nil {
 		return nil, err
 	}
-	ret.ProcsCreated = f.forks
+	ret.ProcsCreated = int64(f.forks)
 
 	return &ret, nil
 }
